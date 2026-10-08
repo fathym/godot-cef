@@ -135,7 +135,29 @@ fn detect_godot_render_backend() -> cef_app::GodotRenderBackend {
 /// - The game is running from the Godot editor (Engine.is_editor_hint() returns true)
 ///
 /// This is a security measure to prevent remote debugging in production builds.
+/// Fathym fork: `godot_cef/debug/enable_remote_devtools` can switch the
+/// capability OFF outright, and it is the ONLY way to do so.
+///
+/// Upstream v2.0.0 offers no disable at all. The condition is
+/// `is_debug_build() || is_editor_hint()`, and anything run through the Godot
+/// **editor** binary -- which is how a `--script` probe runs -- satisfies the
+/// first term, so `--remote-debugging-port` is appended to Chromium's command
+/// line unconditionally. `godot_cef/debug/remote_devtools_port` chooses the
+/// port and is clamped to 1..=65535, so it cannot express "off" either.
+///
+/// Our workstream forbids a remote-debugging port outright (D-23, EI-12).
+/// Setting the port to 1 and relying on Chromium failing to bind a privileged
+/// port is forbidden BY LUCK, not by configuration: the capability is still
+/// enabled, the switch is still on the command line, and one OS or one
+/// elevation away it binds. A prohibition a dependency violates by default has
+/// to be re-assertable IN CONFIGURATION.
+///
+/// Default `true` so an unmodified consumer keeps v2.0.0 behaviour exactly.
 fn should_enable_remote_debugging() -> bool {
+    if !settings::get_enable_remote_devtools() {
+        return false;
+    }
+
     let os = Os::singleton();
     let engine = Engine::singleton();
 

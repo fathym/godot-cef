@@ -12,6 +12,10 @@ const SETTING_DEFAULT_PERMISSION_POLICY: &str = "godot_cef/security/default_perm
 const SETTING_PERMISSION_TIMEOUT: &str = "godot_cef/security/permission_request_timeout_seconds";
 const SETTING_ENABLE_AUDIO_CAPTURE: &str = "godot_cef/audio/enable_audio_capture";
 const SETTING_REMOTE_DEVTOOLS_PORT: &str = "godot_cef/debug/remote_devtools_port";
+/// Fathym fork. The only way to switch the remote-debugging CAPABILITY off.
+/// `remote_devtools_port` is clamped to 1..=65535 and so cannot express "off",
+/// which leaves a prohibition on remote debugging unenforceable in config.
+const SETTING_ENABLE_REMOTE_DEVTOOLS: &str = "godot_cef/debug/enable_remote_devtools";
 const SETTING_MAX_FRAME_RATE: &str = "godot_cef/performance/max_frame_rate";
 const SETTING_CACHE_SIZE_MB: &str = "godot_cef/storage/cache_size_mb";
 const SETTING_USER_AGENT: &str = "godot_cef/network/user_agent";
@@ -28,6 +32,9 @@ const DEFAULT_DISABLE_WEB_SECURITY: bool = false;
 const DEFAULT_PERMISSION_POLICY: i64 = crate::browser::permission_policy::DENY_ALL as i64;
 const DEFAULT_ENABLE_AUDIO_CAPTURE: bool = false;
 const DEFAULT_REMOTE_DEVTOOLS_PORT: i64 = 9229;
+/// `true` so an unmodified consumer keeps v2.0.0 behaviour exactly; this is an
+/// added lever, ⛔ not a changed default.
+const DEFAULT_ENABLE_REMOTE_DEVTOOLS: bool = true;
 const DEFAULT_MAX_FRAME_RATE: i64 = 0; // 0 = follow Godot engine FPS
 const DEFAULT_CACHE_SIZE_MB: i64 = 0; // 0 = use CEF default
 const DEFAULT_USER_AGENT: &str = ""; // Empty = use CEF default
@@ -86,6 +93,12 @@ pub fn register_project_settings() {
         &mut settings,
         SETTING_ENABLE_AUDIO_CAPTURE,
         DEFAULT_ENABLE_AUDIO_CAPTURE,
+    );
+
+    register_bool_setting(
+        &mut settings,
+        SETTING_ENABLE_REMOTE_DEVTOOLS,
+        DEFAULT_ENABLE_REMOTE_DEVTOOLS,
     );
 
     register_int_setting(
@@ -307,6 +320,15 @@ pub fn resolve_permission_policy(policy: i32) -> i32 {
 
 pub fn get_permission_request_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(get_setting_or(SETTING_PERMISSION_TIMEOUT, 60i64).max(1) as u64)
+}
+
+/// Fathym fork. `false` disables remote debugging outright, regardless of
+/// `OS.is_debug_build()` or `Engine.is_editor_hint()`.
+pub fn get_enable_remote_devtools() -> bool {
+    get_setting_or(
+        SETTING_ENABLE_REMOTE_DEVTOOLS,
+        DEFAULT_ENABLE_REMOTE_DEVTOOLS,
+    )
 }
 
 pub fn get_remote_devtools_port() -> u16 {

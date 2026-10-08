@@ -165,8 +165,19 @@ pub fn godot_key_to_native_keycode(key: Key) -> i32 {
         // return 0 and let Blink fall back rather than lie about the key.
         return 0;
     }
-    let extended: i32 = if is_extended_key(key) { 1 << 24 } else { 0 };
-    1i32 | ((scan as i32 & 0xFF) << 16) | extended
+    // MEASURED, ⛔ not reasoned about. The first attempt packed the full
+    // WM_KEY* lParam (`1 | scan << 16 | extended << 24`). Built and run against
+    // the real page, that produced `event.code: ""` for every printable key --
+    // better than v2.0.0's `Pause` / `F10` / `Numpad9`, because it is honestly
+    // empty rather than confidently wrong, but still not the key.
+    //
+    // Chromium does not want the lParam here. `ui::KeycodeConverter`'s Windows
+    // table is keyed on the SCAN CODE itself, with extended keys carrying an
+    // `0xE000` prefix (`0x001E` is KeyA, `0xE01C` is NumpadEnter). So
+    // native_key_code is `scan | 0xE000` for an extended key and `scan`
+    // otherwise.
+    let extended: i32 = if is_extended_key(key) { 0xE000 } else { 0 };
+    (scan as i32 & 0xFF) | extended
 }
 
 /// Keys that carry the WM_KEY* extended bit. Blink uses it to separate the
@@ -199,7 +210,12 @@ mod windows_native_keycode_tests {
     // A control proves response, never specificity: every assertion here
     // ships the NEAR-MISS it has to be distinguished from.
     #[test]
-    fn native_keycode_is_an_lparam_and_not_a_virtual_key() {
+    // Renamed from `native_keycode_is_an_lparam_and_not_a_virtual_key`: the
+    // lParam form was replaced and the NAME outlived it, which is the same
+    // staleness as the two assertions below once were. A test whose name
+    // describes a representation it no longer checks misleads the next reader
+    // exactly as a stale assertion misleads the next runner.
+    fn native_keycode_is_a_scan_code_and_not_a_virtual_key() {
         let x = godot_key_to_native_keycode(Key::X);
         assert_ne!(x, 0, "X must map to some scan code on a US layout");
         // THE DEFECT: upstream returned the virtual key code itself.
@@ -208,17 +224,27 @@ mod windows_native_keycode_tests {
             godot_key_to_windows_keycode(Key::X),
             "native_key_code must NOT equal the virtual key code"
         );
-        // The lParam shape: repeat count 1 in the low word.
-        assert_eq!(x & 0xFFFF, 1, "low word is the repeat count");
-        // The scan code must be in bits 16..=23 and must be non-zero.
-        assert_ne!((x >> 16) & 0xFF, 0, "bits 16..=23 carry the scan code");
+        // The value Chromium's Windows table is keyed on: a scan code in the
+        // low byte, no high-word payload, and an 0xE000 prefix only for
+        // extended keys. X is not extended.
+        assert_eq!(x & 0xFF, x, "a non-extended key is just its scan code");
+        assert_ne!(x & 0xFF, 0, "the scan code must be non-zero");
+        // KeyX's scan code on a US layout is 0x2D. Pinning the VALUE, not just
+        // its shape: a shape assertion alone passes for any wrong key.
+        assert_eq!(x, 0x2D, "KeyX's scan code is 0x2D");
     }
 
     #[test]
     fn distinct_keys_get_distinct_scan_codes() {
-        let x = (godot_key_to_native_keycode(Key::X) >> 16) & 0xFF;
-        let c = (godot_key_to_native_keycode(Key::C) >> 16) & 0xFF;
-        let v = (godot_key_to_native_keycode(Key::V) >> 16) & 0xFF;
+        // The scan code lives in the LOW byte. An earlier revision of this
+        // test read `>> 16`, left over from the lParam form; it then compared
+        // 0 with 0 with 0 and failed, which looked like a code defect and was
+        // a stale assertion. ⭐ A representation change invalidates every
+        // assertion about the representation, not just the one you remembered.
+        let x = godot_key_to_native_keycode(Key::X) & 0xFF;
+        let c = godot_key_to_native_keycode(Key::C) & 0xFF;
+        let v = godot_key_to_native_keycode(Key::V) & 0xFF;
+        assert_ne!(x, 0, "X must have a scan code");
         assert_ne!(x, c);
         assert_ne!(c, v);
         assert_ne!(x, v);
@@ -228,8 +254,11 @@ mod windows_native_keycode_tests {
     fn the_extended_bit_separates_keypad_enter_from_enter() {
         let enter = godot_key_to_native_keycode(Key::ENTER);
         let kp_enter = godot_key_to_native_keycode(Key::KP_ENTER);
-        assert_eq!(enter & (1 << 24), 0, "main Enter is not extended");
-        assert_ne!(kp_enter & (1 << 24), 0, "keypad Enter IS extended");
+        // The extended marker is Chromium's 0xE000 prefix, ⛔ not lParam bit
+        // 24. Same staleness as the test above.
+        assert_eq!(enter & 0xE000, 0, "main Enter carries no 0xE000 prefix");
+        assert_ne!(kp_enter & 0xE000, 0, "keypad Enter DOES carry 0xE000");
+        assert_ne!(enter, kp_enter, "the two Enters must be distinguishable");
     }
 }
 
