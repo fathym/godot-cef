@@ -35,12 +35,22 @@ impl CefTexture {
                 key.is_alt_pressed(),
                 key.is_meta_pressed(),
             );
-        self.texture2d_helper
-            .bind()
-            .forward_key_event(key, self.ime_active);
+        self.texture2d_helper.bind().forward_key_event_ex(
+            key,
+            self.ime_active,
+            self.intercept_editing_shortcuts,
+        );
         // The proxy must receive normal Godot key/IME processing to produce
         // text_changed. The browser control has no such native text handler.
-        if !deliver_to_proxy && let Some(mut viewport) = self.base().get_viewport() {
+        //
+        // Fathym fork: upstream marked EVERY key not bound for the IME proxy
+        // as handled, so the host never got a chance at a chord -- a Mosaic
+        // shell cannot own a single global accelerator while a Pane has focus.
+        // `consume_unhandled_keys` defaults to true, so this is additive.
+        if self.consume_unhandled_keys
+            && !deliver_to_proxy
+            && let Some(mut viewport) = self.base().get_viewport()
+        {
             viewport.set_input_as_handled();
         }
     }

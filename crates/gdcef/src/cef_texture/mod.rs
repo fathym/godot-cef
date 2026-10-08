@@ -10,6 +10,7 @@ mod signals;
 mod source_drag;
 
 use cef::{self, ImplBrowserHost, ImplDragData};
+use godot::classes::InputEventKey;
 use godot::classes::notify::ControlNotification;
 use godot::classes::texture_rect::ExpandMode;
 use godot::classes::{
@@ -74,6 +75,38 @@ pub struct CefTexture {
     /// automatically updated from the browser's caret position.
     ime_position: Vector2i,
 
+    // ---- Fathym fork: the APERTURE contract.
+    // One page can be shown behind N apertures, each a sub-rect of the page
+    // drawn somewhere else on the canvas at its own scale. These three say
+    // which aperture owns the OS-level IME candidate window and how to map a
+    // page-space caret into it. Defaults reproduce upstream exactly:
+    // origin (0,0), scale (1,1), source origin (0,0).
+    #[export]
+    #[var]
+    /// Top-left of this aperture's source rect in page pixels.
+    aperture_source_origin: Vector2i,
+    #[export]
+    #[var]
+    /// Aperture draw size divided by its source-rect size.
+    aperture_scale: Vector2,
+    #[export]
+    #[var]
+    /// Offset from this node's global position to the aperture's top-left.
+    aperture_origin: Vector2,
+    #[export]
+    #[var]
+    /// When false, a key event this node forwarded to the browser is NOT
+    /// marked handled, so the host still gets a chance at the chord.
+    /// Upstream behaviour is `true`.
+    consume_unhandled_keys: bool,
+    #[export]
+    #[var]
+    /// When false, Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+Shift+V are NOT turned
+    /// into frame.select_all()/copy()/cut()/paste_and_match_style() and reach
+    /// the page as ordinary key events. An embedded pty needs this false to
+    /// ever see Ctrl+C as SIGINT. Upstream behaviour is `true`.
+    intercept_editing_shortcuts: bool,
+
     // Internal CefTexture2D helper for shared settings behavior.
     texture2d_helper: Gd<CefTexture2D>,
     // Change detection state
@@ -121,6 +154,12 @@ impl ITextureRect for CefTexture {
             preload_script: GString::new(),
             preload_script_path: GString::new(),
             ime_position: Vector2i::new(0, 0),
+            // Fathym fork defaults: identical behaviour to upstream v2.0.0.
+            aperture_source_origin: Vector2i::new(0, 0),
+            aperture_scale: Vector2::new(1.0, 1.0),
+            aperture_origin: Vector2::ZERO,
+            consume_unhandled_keys: true,
+            intercept_editing_shortcuts: true,
             texture2d_helper,
             last_size: Vector2::ZERO,
             last_dpi: 1.0,
@@ -452,6 +491,103 @@ impl CefTexture {
     /// This is a fire-and-forget operation.
     pub fn eval(&mut self, code: GString) {
         self.texture2d_helper.bind_mut().eval(code);
+    }
+
+    // ========================================================================
+    // Fathym fork: APERTURE-ROUTED INPUT.
+    //
+    // Upstream splits the browser across two classes:
+    //   * CefTexture   -- a TextureRect node. 24 signals (ipc_message,
+    //                     load_finished, console_message, the drag family,
+    //                     cookies), the IME proxy, popup compositing. Its
+    //                     input arrives through its own `_input` / `_gui_input`
+    //                     and is therefore HIT-TESTED against ITS OWN RECT, so
+    //                     it only ever sees one un-cropped page.
+    //   * CefTexture2D -- a Texture2D resource. Public `forward_*` entry
+    //                     points, so a host can synthesize events at page
+    //                     coordinates, but exactly TWO signals (both about
+    //                     permissions) and no IME at all.
+    //
+    // A Mosaic Pane is a sub-rect of one page drawn somewhere else on the
+    // canvas, so the host MUST synthesize page-coordinate events -- and it
+    // also needs the signals and the IME. Neither class alone can do both,
+    // and that, not the texture format, is what made this arm look impossible.
+    //
+    // CefTexture already composes a CefTexture2D (`texture2d_helper`, declared
+    // above) and routes its own events through it. These delegates expose that
+    // same path to the host. Nothing new is implemented; a private route is
+    // made public.
+    // ========================================================================
+
+    #[func]
+    /// Forwards a mouse-button event already expressed in PAGE coordinates.
+    pub fn forward_mouse_button_event(
+        &self,
+        event: Gd<godot::classes::InputEventMouseButton>,
+        pixel_scale: f32,
+        device_scale: f32,
+    ) {
+        self.texture2d_helper
+            .bind()
+            .forward_mouse_button_event(event, pixel_scale, device_scale);
+    }
+
+    #[func]
+    /// Forwards a mouse-motion event already expressed in PAGE coordinates.
+    pub fn forward_mouse_motion_event(
+        &self,
+        event: Gd<godot::classes::InputEventMouseMotion>,
+        pixel_scale: f32,
+        device_scale: f32,
+    ) {
+        self.texture2d_helper
+            .bind()
+            .forward_mouse_motion_event(event, pixel_scale, device_scale);
+    }
+
+    #[func]
+    /// Forwards a key event, honouring this node's
+    /// `intercept_editing_shortcuts` so an embedded pty can see Ctrl+C.
+    pub fn forward_key_event(&self, event: Gd<InputEventKey>, focus_on_editable_field: bool) {
+        self.texture2d_helper.bind().forward_key_event_ex(
+            event,
+            focus_on_editable_field,
+            self.intercept_editing_shortcuts,
+        );
+    }
+
+    #[func]
+    /// Forwards a wheel/pan gesture already expressed in PAGE coordinates.
+    pub fn forward_pan_gesture_event(
+        &self,
+        event: Gd<godot::classes::InputEventPanGesture>,
+        pixel_scale: f32,
+        device_scale: f32,
+    ) {
+        self.texture2d_helper
+            .bind()
+            .forward_pan_gesture_event(event, pixel_scale, device_scale);
+    }
+
+    #[func]
+    /// Maps a point inside an aperture to its page coordinate using this
+    /// node's declared aperture contract. Exposed so the host and the IME
+    /// placement cannot drift apart: both read the same four numbers.
+    pub fn aperture_point_to_page(&self, local: Vector2) -> Vector2 {
+        let sx = if self.aperture_scale.x != 0.0 {
+            self.aperture_scale.x
+        } else {
+            1.0
+        };
+        let sy = if self.aperture_scale.y != 0.0 {
+            self.aperture_scale.y
+        } else {
+            1.0
+        };
+        Vector2::new(
+            self.aperture_source_origin.x as f32 + (local.x - self.aperture_origin.x) / sx,
+            self.aperture_source_origin.y as f32 + (local.y - self.aperture_origin.y) / sy,
+        )
     }
 
     #[func]

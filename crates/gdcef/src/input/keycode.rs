@@ -127,9 +127,110 @@ pub fn godot_key_to_windows_keycode(key: Key) -> i32 {
 /// - On Windows: same as Windows virtual key codes
 /// - On macOS: macOS virtual key codes (from HIToolbox/Events.h)
 /// - On Linux: X11 key codes
+/// CEF's Windows contract is that `native_key_code` is the **lParam of the
+/// WM_KEY* message**, not the virtual key code. Blink derives
+/// `KeyboardEvent.code` from the SCAN CODE carried in lParam bits 16..=23, so
+/// handing it a virtual key code makes `event.code` garbage. Upstream v2.0.0
+/// delegated straight to `godot_key_to_windows_keycode`, which is why a page
+/// saw `code: "F12"` for an `x`. VS Code's keybinding layer reads exactly that
+/// field, so a Pane that accepted letters could not receive a shortcut.
+///
+/// lParam layout (WM_KEYDOWN):
+///   bits  0..=15  repeat count          -> 1
+///   bits 16..=23  scan code             -> MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
+///   bit  24       extended key flag
+///   bits 25..=28  reserved
+///   bit  29       context code (Alt)
+///   bit  30       previous key state
+///   bit  31       transition state (1 on key-up)
+///
+/// Only the repeat count, scan code and extended bit are set here; CEF fills
+/// the rest from `type` and `modifiers`.
 #[cfg(target_os = "windows")]
 pub fn godot_key_to_native_keycode(key: Key) -> i32 {
-    godot_key_to_windows_keycode(key)
+    let vk = godot_key_to_windows_keycode(key);
+    if vk <= 0 {
+        return 0;
+    }
+    // SAFETY: MapVirtualKeyW is a pure lookup against the active layout.
+    let scan = unsafe {
+        windows_sys::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW(
+            vk as u32,
+            windows_sys::Win32::UI::Input::KeyboardAndMouse::MAPVK_VK_TO_VSC,
+        )
+    };
+    if scan == 0 {
+        // No scan code for this virtual key on this layout. Returning the
+        // virtual key code here would reinstate the defect silently, so
+        // return 0 and let Blink fall back rather than lie about the key.
+        return 0;
+    }
+    let extended: i32 = if is_extended_key(key) { 1 << 24 } else { 0 };
+    1i32 | ((scan as i32 & 0xFF) << 16) | extended
+}
+
+/// Keys that carry the WM_KEY* extended bit. Blink uses it to separate the
+/// numeric keypad from the main block, e.g. `NumpadEnter` from `Enter`.
+#[cfg(target_os = "windows")]
+fn is_extended_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::INSERT
+            | Key::DELETE
+            | Key::HOME
+            | Key::END
+            | Key::PAGEUP
+            | Key::PAGEDOWN
+            | Key::LEFT
+            | Key::RIGHT
+            | Key::UP
+            | Key::DOWN
+            | Key::NUMLOCK
+            | Key::KP_ENTER
+            | Key::KP_DIVIDE
+            | Key::PRINT
+    )
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_native_keycode_tests {
+    use super::*;
+
+    // A control proves response, never specificity: every assertion here
+    // ships the NEAR-MISS it has to be distinguished from.
+    #[test]
+    fn native_keycode_is_an_lparam_and_not_a_virtual_key() {
+        let x = godot_key_to_native_keycode(Key::X);
+        assert_ne!(x, 0, "X must map to some scan code on a US layout");
+        // THE DEFECT: upstream returned the virtual key code itself.
+        assert_ne!(
+            x,
+            godot_key_to_windows_keycode(Key::X),
+            "native_key_code must NOT equal the virtual key code"
+        );
+        // The lParam shape: repeat count 1 in the low word.
+        assert_eq!(x & 0xFFFF, 1, "low word is the repeat count");
+        // The scan code must be in bits 16..=23 and must be non-zero.
+        assert_ne!((x >> 16) & 0xFF, 0, "bits 16..=23 carry the scan code");
+    }
+
+    #[test]
+    fn distinct_keys_get_distinct_scan_codes() {
+        let x = (godot_key_to_native_keycode(Key::X) >> 16) & 0xFF;
+        let c = (godot_key_to_native_keycode(Key::C) >> 16) & 0xFF;
+        let v = (godot_key_to_native_keycode(Key::V) >> 16) & 0xFF;
+        assert_ne!(x, c);
+        assert_ne!(c, v);
+        assert_ne!(x, v);
+    }
+
+    #[test]
+    fn the_extended_bit_separates_keypad_enter_from_enter() {
+        let enter = godot_key_to_native_keycode(Key::ENTER);
+        let kp_enter = godot_key_to_native_keycode(Key::KP_ENTER);
+        assert_eq!(enter & (1 << 24), 0, "main Enter is not extended");
+        assert_ne!(kp_enter & (1 << 24), 0, "keypad Enter IS extended");
+    }
 }
 
 /// Converts Godot key codes to macOS native key codes (HIToolbox virtual key codes)

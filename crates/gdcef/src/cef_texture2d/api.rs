@@ -554,6 +554,26 @@ impl CefTexture2D {
 
     #[func]
     pub fn forward_key_event(&self, event: Gd<InputEventKey>, focus_on_editable_field: bool) {
+        // Upstream signature, upstream behaviour.
+        self.forward_key_event_ex(event, focus_on_editable_field, true);
+    }
+
+    /// Fathym fork. As `forward_key_event`, but lets the caller switch OFF
+    /// godot-cef's unconditional interception of Ctrl+A / Ctrl+C / Ctrl+X /
+    /// Ctrl+Shift+V. Those are turned into `frame.select_all()`, `copy()`,
+    /// `cut()` and `paste_and_match_style()` at
+    /// `crates/gdcef/src/input/mod.rs:377..=397` and RETURN EARLY, so the
+    /// chord never reaches the page. In a web page that is fine and even
+    /// desirable -- `frame.copy()` is CEF's own copy. In an embedded terminal
+    /// (xterm.js over a real pty) it is fatal: the pty can never see Ctrl+C
+    /// as SIGINT, which is step 3 of the Mosaic scene.
+    #[func]
+    pub fn forward_key_event_ex(
+        &self,
+        event: Gd<InputEventKey>,
+        focus_on_editable_field: bool,
+        intercept_editing_shortcuts: bool,
+    ) {
         let Some(host) = self.runtime.app().host() else {
             return;
         };
@@ -563,7 +583,13 @@ impl CefTexture2D {
             .state
             .as_ref()
             .and_then(|state| state.browser.main_frame());
-        input::handle_key_event(&host, frame.as_ref(), &event, focus_on_editable_field);
+        input::handle_key_event(
+            &host,
+            frame.as_ref(),
+            &event,
+            focus_on_editable_field,
+            intercept_editing_shortcuts,
+        );
     }
 
     #[func]
