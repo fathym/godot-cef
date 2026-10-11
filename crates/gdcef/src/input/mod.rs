@@ -345,11 +345,17 @@ pub(crate) fn should_deliver_key_to_ime_proxy(
 }
 
 /// Handles keyboard events and sends them to CEF browser host.
+/// `intercept_editing_shortcuts` makes the Ctrl+A / Ctrl+C / Ctrl+X /
+/// Ctrl+Shift+V interception below OPT-OUT. Upstream intercepts them
+/// unconditionally, which is correct for a page and wrong for an embedded
+/// terminal: a pty needs to see Ctrl+C itself to raise SIGINT, and
+/// `frame.copy()` guarantees it never arrives.
 pub fn handle_key_event(
     host: &impl ImplBrowserHost,
     frame: Option<&impl ImplFrame>,
     event: &Gd<InputEventKey>,
     focus_on_editable_field: bool,
+    intercept_editing_shortcuts: bool,
 ) {
     let mut modifiers = keyboard_modifiers!(event);
 
@@ -368,7 +374,8 @@ pub fn handle_key_event(
     }
 
     // Handle shortcuts using pre-cached Shortcut objects
-    if is_pressed
+    if intercept_editing_shortcuts
+        && is_pressed
         && !is_echo
         && let Some(frame) = frame
     {

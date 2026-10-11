@@ -63,11 +63,47 @@ impl CefTexture {
                 self.base().get_global_position().y,
             );
 
+            // ---------------------------------------------------------------
+            // Fathym fork. Upstream computed:
+            //     ime_position * display_scale
+            //       + (viewport_offset + node_global_position) * pixel_scale
+            // which is correct for ONE whole page in ONE un-cropped node, and
+            // wrong by exactly the crop origin the moment the visible Pane is
+            // a sub-rect of the page shown somewhere else on the canvas --
+            // which is the source-atlas configuration our scene specifies.
+            //
+            // THREE terms were missing:
+            //   1. aperture_source_origin -- the source rect's top-left, so a
+            //      caret at page (1200, 40) inside a Pane whose crop starts at
+            //      (1140, 0) is 60 px from that Pane's left edge, not 1200.
+            //   2. aperture_scale -- a Pane drawn at 0.65x must place the
+            //      candidate window at 0.65x the in-page offset.
+            //   3. aperture_origin -- WHICH aperture owns the candidate
+            //      window. One page behind N apertures has N correct answers
+            //      and the OS has a single window-level IME position, so the
+            //      owner is a CHOICE the host has to make and upstream never
+            //      had to. Default (0,0) with scale (1,1) and origin (0,0)
+            //      reproduces upstream behaviour exactly, so this is additive.
+            let caret_in_page = Vector2::new(
+                (self.ime_position.x - self.aperture_source_origin.x) as f32,
+                (self.ime_position.y - self.aperture_source_origin.y) as f32,
+            );
+            let caret_in_aperture = Vector2::new(
+                caret_in_page.x * self.aperture_scale.x,
+                caret_in_page.y * self.aperture_scale.y,
+            );
+            // When no aperture is declared, aperture_origin is ZERO and the
+            // node's own global position is still the anchor, as upstream.
+            let anchor = Vector2::new(
+                node_offset.x + self.aperture_origin.x,
+                node_offset.y + self.aperture_origin.y,
+            );
+
             let final_ime_position = Vector2i::new(
-                (self.ime_position.x as f32 * display_scale
-                    + (viewport_offset.x + node_offset.x) * pixel_scale) as i32,
-                (self.ime_position.y as f32 * display_scale
-                    + (viewport_offset.y + node_offset.y) * pixel_scale) as i32,
+                (caret_in_aperture.x * display_scale
+                    + (viewport_offset.x + anchor.x) * pixel_scale) as i32,
+                (caret_in_aperture.y * display_scale
+                    + (viewport_offset.y + anchor.y) * pixel_scale) as i32,
             );
 
             ds.window_set_ime_position(final_ime_position);

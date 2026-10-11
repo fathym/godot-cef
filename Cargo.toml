@@ -31,7 +31,10 @@ windows = { version = "0.62", features = [
 ] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging"
+    "Win32_UI_WindowsAndMessaging",
+    # Fathym fork: MapVirtualKeyW, for the lParam/scan-code form of
+    # native_key_code that Blink needs to derive KeyboardEvent.code.
+    "Win32_UI_Input_KeyboardAndMouse"
 ] }
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = [
