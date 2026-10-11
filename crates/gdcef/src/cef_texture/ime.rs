@@ -100,10 +100,10 @@ impl CefTexture {
             );
 
             let final_ime_position = Vector2i::new(
-                (caret_in_aperture.x * display_scale
-                    + (viewport_offset.x + anchor.x) * pixel_scale) as i32,
-                (caret_in_aperture.y * display_scale
-                    + (viewport_offset.y + anchor.y) * pixel_scale) as i32,
+                (caret_in_aperture.x * display_scale + (viewport_offset.x + anchor.x) * pixel_scale)
+                    as i32,
+                (caret_in_aperture.y * display_scale + (viewport_offset.y + anchor.y) * pixel_scale)
+                    as i32,
             );
 
             ds.window_set_ime_position(final_ime_position);
